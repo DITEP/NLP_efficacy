@@ -1,1 +1,1 @@
-# RNN_PubMed
+# RNN_abstracts
