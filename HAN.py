@@ -1,104 +1,17 @@
-# -*- coding: utf-8 -*-
-"""phase1_prediction
-"""
-
-import os
-import string
-import sklearn
-import nltk
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from tensorflow.python.keras.preprocessing.text import Tokenizer
-from tensorflow.python.keras.preprocessing.sequence import pad_sequences
-from keras.models import Sequential
-from keras.layers import Dense, GRU, Bidirectional
-from keras.layers.embeddings import Embedding
-from keras.initializers import Constant
-from keras.optimizers import Adam
+import numpy as np
+from keras.preprocessing.text import Tokenizer,  text_to_word_sequence
+from keras.engine.topology import Layer
+from keras import initializers as initializers, regularizers, constraints
+from keras.layers import Embedding, Input, Dense, LSTM, GRU, Bidirectional, TimeDistributed, Dropout
 from keras import backend as K
-from keras.layers import Layer
-from keras import initializers
-from keras import regularizers
-from keras import constraints
-
-nltk.download('punkt')
-nltk.download('stopwords')
-
-data = pd.read_csv('datas.txt', header=0, sep=';')
-data.head()
-
-X = data.loc[:, 'Abstract']
-y = data.loc[:, 'Clinical_activity']
-total_reviews = X.tolist()
-max_length = max([len(s.split()) for s in total_reviews])
-
-EMBEDDING_DIM = 100
-
-review_lines = list()
-lines = data['Abstract'].values.tolist()
-
-for line in lines:
-    # tokenize
-    tokens = word_tokenize(line)
-    # convert to lower
-    tokens = [w.lower() for w in tokens]
-    # remove punctuation
-    table = str.maketrans('', '', string.punctuation)
-    stripped = [w.translate(table) for w in tokens]
-    # remove remaining tokens that are not alphabetic
-    words = [word for word in stripped if word.isalpha()]
-    # filter stop words
-    stop_words = set(stopwords.words('english'))
-    words = [w for w in words if not w in stop_words]
-    review_lines.append(words)
-
-embeddings_index = {}
-f = open(os.path.join('', 'word2vec_abstract.txt'), encoding="utf-8")
-for line in f:
-    # extract each combination of word/coefficient
-    values = line.split()
-    # extract word
-    word = values[0]
-    # extract corresponding vector
-    coefs = np.asarray(values[1:])
-    # build a dictionary word : vector
-    embeddings_index[word] = coefs
-f.close()
-
-# Vectorize the text samples into a 2D integer tensor (explain)
-tokenizer_obj = Tokenizer()
-# Updates internal vocabulary based on a list of texts.
-# This method creates the vocabulary index based on word frequency.
-tokenizer_obj.fit_on_texts(review_lines)
-# Transforms each text in texts to a sequence of integers.
-sequences = tokenizer_obj.texts_to_sequences(review_lines)
-
-# Get the dictionary word : index
-word_index = tokenizer_obj.word_index
-print("Found %s unique tokens." % len(word_index))
-# pad sequences
-review_pad = pad_sequences(sequences, maxlen=max_length)
-sentiment = data['Clinical_activity'].values
-print('Shape of abstract tensor:', review_pad.shape)
-print('Shape of clinical tensor:', sentiment.shape)
-
-num_words = len(word_index) + 1
-embedding_matrix = np.zeros((num_words, EMBEDDING_DIM))
-
-for word, i in word_index.items():
-    if i > num_words:
-        continue
-    # get the vector corresponding to word i
-    embedding_vector = embeddings_index.get(word)
-    if embedding_vector is not None:
-        # words not found in embedding index will be all-zeros
-        # replace by the corresponding word vector
-        embedding_matrix[i] = embedding_vector
-
-print("Number of words :", num_words)
+from keras.optimizers import Adam
+from keras.models import Model
+import re
+import os
+import matplotlib.pyplot as plt
+from nltk import tokenize
+import seaborn as sns
 
 
 def dot_product(x, kernel):
@@ -212,39 +125,158 @@ class AttentionWithContext(Layer):
         return input_shape[0], input_shape[-1]
 
 
-# define model
-model = Sequential()
-embedding_layer = Embedding(num_words,
-                            EMBEDDING_DIM,
-                            embeddings_initializer=Constant(embedding_matrix),
-                            input_length=max_length,
-                            trainable=False)
-model.add(embedding_layer)
-model.add(Bidirectional(GRU(units=32, dropout=0.3, recurrent_dropout=0.3, return_sequences=True)))
-model.add(AttentionWithContext())
-model.add(Dense(1, activation='sigmoid'))
+df = pd.read_csv('datas.txt', header=0, sep=';')
+labels = df['Clinical_activity'].values
+corpus = df['Abstract'].tolist()
 
-# try using different optimizers and different optimizer configs
-model.compile(loss='binary_crossentropy', optimizer=Adam(lr=0.003), metrics=['accuracy'])
-print(model.summary())
-
-# Changer les paramètres de validation et de test : 0.75 ; 0.125 ; 0.125
+max_features = 200000  # maximum number of words to keep, based on word frequency
+max_senten_len = 40  # to tune : ensure the security
+max_senten_num = 6  # to tune : ensure the security
+embed_size = 100  # to tune : ensure the security 
 VALIDATION_SPLIT = 0.2
 
-indices = np.arange(review_pad.shape[0])
+
+def clean_str(string):
+    """
+    Tokenization/string cleaning for dataset
+    Every dataset is lower cased except
+    """
+    string = re.sub(r"\\", "", string)
+    string = re.sub(r"\'", "", string)
+    string = re.sub(r"\"", "", string)
+    return string.strip().lower()
+
+
+list_sentences = []
+texts = []
+
+sent_lens = []
+sent_nums = []
+# create a list of list (list_sentences) that contains for each text of the corpus a list of sentences
+# [['sentence1', 'sentence2', ..., 'sentence n'], ['sentence1', ..., 'sentence n']]
+for text in corpus:
+    text_clean = clean_str(text)
+    texts.append(text_clean)
+    # tokenize the sentences
+    sentences = tokenize.sent_tokenize(text_clean)
+    list_sentences.append(sentences)
+    # number of sentences by text
+    sent_nums.append(len(sentences))
+    for sent in sentences:
+        # length of sentence
+        sent_lens.append(len(text_to_word_sequence(sent)))
+
+
+# set the max length of sentences and the max number of sentences in each text
+# max_senten_len = max(sent_lens)
+# max_senten_num = max(sent_nums)
+
+sns.distplot(sent_lens, bins=200)
+plt.show()
+sns.distplot(sent_nums)
+plt.show()
+
+tokenizer = Tokenizer(num_words=max_features, oov_token=True)
+tokenizer.fit_on_texts(texts)
+
+# Create 3D tensor:
+# the first dimension represents the documents
+# the second one represents each sentence in a document
+# the last one represents each word in a sentence.
+data = np.zeros((len(texts), max_senten_num, max_senten_len), dtype='int32')
+for i, sentences in enumerate(list_sentences):
+    for j, sentence in enumerate(sentences):
+        if j < max_senten_num:
+            wordTokens = text_to_word_sequence(sentence)
+            k = 0
+            for _, word in enumerate(wordTokens):
+                try:
+                    if k < max_senten_len and tokenizer.word_index[word] < max_features:
+                        data[i, j, k] = tokenizer.word_index[word]
+                        k = k+1
+                except:
+                    print(word)
+                    pass
+
+word_index = tokenizer.word_index
+print('Total %s unique tokens.' % len(word_index))
+
+print('Shape of data tensor:', data.shape)
+print('Shape of labels tensor:', labels.shape)
+
+# create train and validation set
+indices = np.arange(data.shape[0])
 np.random.shuffle(indices)
-review_pad = review_pad[indices]
-sentiment = sentiment[indices]
-num_validation_samples = int(VALIDATION_SPLIT * review_pad.shape[0])
+data = data[indices]
+labels = labels[indices]
+nb_validation_samples = int(VALIDATION_SPLIT * data.shape[0])
 
-X_train_pad = review_pad[:-num_validation_samples]
-y_train = sentiment[:-num_validation_samples]
-X_test_pad = review_pad[-num_validation_samples:]
-y_test = sentiment[-num_validation_samples:]
+x_train = data[:-nb_validation_samples]
+y_train = labels[:-nb_validation_samples]
+x_val = data[-nb_validation_samples:]
+y_val = labels[-nb_validation_samples:]
+# print('Number of positive and negative reviews in training and validation set')
+# print(y_train.sum(axis=0).tolist())
+# print(y_val.sum(axis=0).tolist())
+print('Test and validation set done')
 
-history = model.fit(X_train_pad, y_train, batch_size=64, epochs=15, validation_data=(X_test_pad, y_test), verbose=1)
+REG_PARAM = 1e-13
+l2_reg = regularizers.l2(REG_PARAM)
+EMBEDDING_DIM = 100
 
-print(history.history.keys())
+num_words = len(word_index) + 1
+embedding_matrix = np.zeros((num_words, EMBEDDING_DIM))
+
+embeddings_index = {}
+f = open(os.path.join('', 'word2vec_abstract.txt'), encoding="utf-8")
+for line in f:
+    # extract each combination of word/coefficient
+    values = line.split()
+    # extract word
+    word = values[0]
+    # extract corresponding vector
+    coefs = np.asarray(values[1:])
+    # build a dictionary word : vector
+    embeddings_index[word] = coefs
+f.close()
+
+for word, i in word_index.items():
+    if i > num_words:
+        continue
+    # get the vector corresponding to word i
+    embedding_vector = embeddings_index.get(word)
+    if embedding_vector is not None:
+        # words not found in embedding index will be all-zeros
+        # replace by the corresponding word vector
+        embedding_matrix[i] = embedding_vector
+
+print("Number of words :", num_words)
+
+embedding_layer = Embedding(len(word_index) + 1,
+                            embed_size,
+                            weights=[embedding_matrix],
+                            input_length=max_senten_len,
+                            trainable=False)
+
+word_input = Input(shape=(max_senten_len,), dtype='float32')
+word_sequences = embedding_layer(word_input)
+word_lstm = Bidirectional(LSTM(150, return_sequences=True, kernel_regularizer=l2_reg))(word_sequences)
+word_dense = TimeDistributed(Dense(200, kernel_regularizer=l2_reg))(word_lstm)
+word_att = AttentionWithContext()(word_dense)
+wordEncoder = Model(word_input, word_att)
+
+sent_input = Input(shape=(max_senten_num, max_senten_len), dtype='float32')
+sent_encoder = TimeDistributed(wordEncoder)(sent_input)
+sent_lstm = Bidirectional(LSTM(150, return_sequences=True, kernel_regularizer=l2_reg))(sent_encoder)
+sent_dense = TimeDistributed(Dense(200, kernel_regularizer=l2_reg))(sent_lstm)
+sent_att = Dropout(0.5)(AttentionWithContext()(sent_dense))
+preds = Dense(1, activation='sigmoid')(sent_att)
+model = Model(sent_input, preds)
+model.compile(loss='binary_crossentropy', optimizer=Adam(lr=0.003), metrics=['acc'])
+print(model.summary())
+
+history = model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=15, batch_size=64)
+
 # summarize history for accuracy
 plt.plot(history.history['acc'])
 plt.plot(history.history['val_acc'])
@@ -253,7 +285,7 @@ plt.ylabel('accuracy')
 plt.xlabel('epoch')
 plt.legend(['train', 'test'], loc='upper left')
 plt.show()
-plt.savefig('accuracy_HAN.png')
+
 # summarize history for loss
 plt.plot(history.history['loss'])
 plt.plot(history.history['val_loss'])
@@ -262,4 +294,3 @@ plt.ylabel('loss')
 plt.xlabel('epoch')
 plt.legend(['train', 'test'], loc='upper left')
 plt.show()
-plt.savefig('loss_HAN.png')
