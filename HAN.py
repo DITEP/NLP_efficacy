@@ -133,7 +133,7 @@ max_features = 200000  # maximum number of words to keep, based on word frequenc
 max_senten_len = 40  # to tune : ensure the security
 max_senten_num = 6  # to tune : ensure the security
 embed_size = 100  # to tune : ensure the security 
-VALIDATION_SPLIT = 0.2
+VALIDATION_SPLIT = 0.1
 
 
 def clean_str(string):
@@ -171,9 +171,45 @@ for text in corpus:
 # max_senten_len = max(sent_lens)
 # max_senten_num = max(sent_nums)
 
-sns.distplot(sent_lens, bins=200)
+# histogram of sentence length (number of words by sentence)
+hist, bin_edges = np.histogram(sent_lens, bins=50)
+
+plt.bar(bin_edges[:-1], hist, width=bin_edges[1]-bin_edges[0], color='red', alpha=0.5)
+
+plt.grid()
+plt.title('Number of words \n by sentence')
 plt.show()
-sns.distplot(sent_nums)
+
+# cumulative distribution
+dx = bin_edges[1] - bin_edges[0]
+
+cumulative = np.cumsum(hist)*dx
+
+plt.plot(bin_edges[:-1], cumulative, c='blue')
+
+plt.grid()
+plt.title('Cumulative distribution \n of number of words \n by sentence')
+plt.show()
+
+# histogram number of sentences
+
+hist, bin_edges = np.histogram(sent_nums, bins=50)
+
+plt.bar(bin_edges[:-1], hist, width=bin_edges[1]-bin_edges[0], color='red', alpha=0.5)
+
+plt.grid()
+plt.title('Number of sentence \n by text')
+plt.show()
+
+# cumulative distribution
+dx = bin_edges[1] - bin_edges[0]
+
+cumulative = np.cumsum(hist)*dx
+
+plt.plot(bin_edges[:-1], cumulative, c='blue')
+
+plt.grid()
+plt.title('Cumulative distribution \n of number of sentences')
 plt.show()
 
 tokenizer = Tokenizer(num_words=max_features, oov_token=True)
@@ -260,22 +296,22 @@ embedding_layer = Embedding(len(word_index) + 1,
 
 word_input = Input(shape=(max_senten_len,), dtype='float32')
 word_sequences = embedding_layer(word_input)
-word_lstm = Bidirectional(LSTM(150, return_sequences=True, kernel_regularizer=l2_reg))(word_sequences)
+word_lstm = Bidirectional(GRU(64, return_sequences=True, kernel_regularizer=l2_reg, recurrent_dropout=0.5, dropout=0.3))(word_sequences)
 word_dense = TimeDistributed(Dense(200, kernel_regularizer=l2_reg))(word_lstm)
 word_att = AttentionWithContext()(word_dense)
 wordEncoder = Model(word_input, word_att)
 
 sent_input = Input(shape=(max_senten_num, max_senten_len), dtype='float32')
 sent_encoder = TimeDistributed(wordEncoder)(sent_input)
-sent_lstm = Bidirectional(LSTM(150, return_sequences=True, kernel_regularizer=l2_reg))(sent_encoder)
+sent_lstm = Bidirectional(GRU(64, return_sequences=True, kernel_regularizer=l2_reg, recurrent_dropout=0.5))(sent_encoder)
 sent_dense = TimeDistributed(Dense(200, kernel_regularizer=l2_reg))(sent_lstm)
 sent_att = Dropout(0.5)(AttentionWithContext()(sent_dense))
 preds = Dense(1, activation='sigmoid')(sent_att)
 model = Model(sent_input, preds)
-model.compile(loss='binary_crossentropy', optimizer=Adam(lr=0.003), metrics=['acc'])
+model.compile(loss='binary_crossentropy', optimizer=Adam(lr=0.0004), metrics=['acc'])
 print(model.summary())
 
-history = model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=15, batch_size=64)
+history = model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=50, batch_size=64)
 
 # summarize history for accuracy
 plt.plot(history.history['acc'])
